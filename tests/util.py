@@ -1,4 +1,7 @@
 """Test utilities."""
+import os
+import subprocess
+import sys
 import unittest
 import bs4
 import textwrap
@@ -23,6 +26,22 @@ XHTML = 0x4
 XML = 0x8
 PYHTML = 0x10
 LXML_HTML = 0x20
+
+# Maximum time (in seconds) a selector is allowed to take to fail compilation.
+COMPILE_TIMEOUT = 20
+
+# Script that compiles the selector read from `stdin` in a separate process.
+# Exit code `0` means compiling raised `SelectorSyntaxError`, `2` means it compiled.
+COMPILE_SCRIPT = '''
+import sys
+sys.path.insert(0, sys.argv[1])
+import soupsieve as sv
+try:
+    sv.compile(sys.stdin.read())
+except sv.SelectorSyntaxError:
+    sys.exit(0)
+sys.exit(2)
+'''
 
 
 def skip_no_lxml(func):
@@ -102,6 +121,33 @@ class TestCase(unittest.TestCase):
         print('----Running Assert Test----')
         with self.assertRaises(exception):
             self.compile_pattern(pattern, namespaces=namespace, custom=custom)
+
+    def assert_syntax_error_before_timeout(self, pattern, timeout=COMPILE_TIMEOUT):
+        """
+        Assert that compiling the pattern fails with a syntax error, not a timeout.
+
+        The pattern is compiled in a separate process as a regular expression stuck in
+        catastrophic backtracking holds the GIL and cannot be interrupted by a thread,
+        and `signal.SIGALRM` is not available on all platforms (Windows).
+        """
+
+        print('----Running Assert Syntax Error Before Timeout Test----')
+        print('PATTERN: ', pattern)
+        path = os.path.dirname(os.path.dirname(os.path.abspath(sv.__file__)))
+        timed_out = False
+        try:
+            result = subprocess.run(
+                [sys.executable, '-c', COMPILE_SCRIPT, path],
+                input=pattern,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        self.assertFalse(timed_out, 'Compiling the pattern timed out after {} seconds'.format(timeout))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def assert_selector(self, markup, selectors, expected_ids, namespaces={}, custom=None, flags=0):
         """Assert selector."""
